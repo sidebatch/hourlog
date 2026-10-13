@@ -204,6 +204,8 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
 .toast{position:fixed;left:50%;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 18px);transform:translate(-50%,16px);background:#171A21;color:#fff;font-size:14px;font-weight:600;padding:12px 18px;border-radius:99px;z-index:70;opacity:0;pointer-events:none;transition:all .25s;box-shadow:0 10px 28px rgba(0,0,0,.25);max-width:88vw;text-align:center}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .ver{text-align:center;color:var(--sub);font-size:12px;margin-top:18px}
+.backup-banner{background:#FFF7E8;border:1.5px solid #F2D492;color:#7A5200;border-radius:16px;padding:15px 16px;margin-top:14px;font-size:14px;font-weight:600;line-height:1.55}
+.backup-banner button{margin-top:10px;background:#7A5200;color:#fff;font-weight:700;font-size:13.5px;border-radius:10px;padding:9px 14px}
 </style>
 </head>
 <body>
@@ -238,6 +240,8 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
       <div class="progress"><div id="heroBar" style="width:0%"></div></div>
       <div class="hero-note" id="heroNote"></div>
     </div>
+
+    <div id="backupBanner"></div>
 
     <div class="totals">
       <div class="total-card">
@@ -323,6 +327,15 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
     </div>
 
     <div class="card">
+      <h3>저장 보호</h3>
+      <div class="desc" id="persistDesc">상태를 확인하고 있어요</div>
+      <div class="set-actions">
+        <button class="btn-ghost" id="btnPersist">영구 저장 켜기</button>
+      </div>
+      <p class="help" style="margin-top:12px">기록은 이 기기 안에 세 겹으로 저장돼요(기본 저장 + 스냅샷 + 보조 저장소). 하나가 지워지면 나머지로 자동 복구합니다. 그래도 브라우저 데이터 전체를 지우면 함께 사라지니, 백업 파일을 내보내 두는 게 가장 안전해요.</p>
+    </div>
+
+    <div class="card">
       <h3>데이터</h3>
       <div class="desc">기록은 이 기기에만 저장돼요. 기기를 바꾸기 전에 백업해 두세요.</div>
       <div class="set-actions">
@@ -347,7 +360,7 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
       <p class="help">브라우저 메뉴에서 <b>앱 설치</b> 또는 <b>홈 화면에 추가</b>를 누르면 앱처럼 쓸 수 있어요. 오프라인에서도 열립니다.</p>
     </div>
 
-    <div class="ver">아워로그 v1.0.0</div>
+    <div class="ver">아워로그 v1.1.0</div>
   </section>
 </main>
 
@@ -431,20 +444,68 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
 'use strict';
 /* ═══════════ 데이터 ═══════════ */
 const LS_KEY = 'hourlog-v1';
+const LS_BACKUP_KEY = 'hourlog-v1-backup';
 const DAY_NAMES = ['일','월','화','수','목','금','토'];
 let state = load();
 
-function load(){
+function trySnapshot(){
   try{
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(LS_BACKUP_KEY);
     if(raw){
       const s = JSON.parse(raw);
-      if(s && Array.isArray(s.entries) && s.settings) return s;
+      if(s && Array.isArray(s.entries) && s.entries.length && s.settings) return s;
     }
   }catch(e){}
+  return null;
+}
+function load(){
+  let s = null;
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    if(raw) s = JSON.parse(raw);
+  }catch(e){ s = null; }
+  if(s && Array.isArray(s.entries) && s.settings && s.entries.length) return s;
+  /* 주 저장소가 비었거나 깨졌으면 스냅샷으로 복구 (전체 삭제 뒤에는 스냅샷도 비어 있어 부활하지 않음) */
+  const healed = trySnapshot();
+  if(healed) return healed;
+  if(s && Array.isArray(s.entries) && s.settings) return s;
   return { entries: [], settings: { weekStart: 3, capHours: 30 } };
 }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+function save(){
+  const str = JSON.stringify(state);
+  try{
+    localStorage.setItem(LS_KEY, str);
+    localStorage.setItem(LS_BACKUP_KEY, str);
+  }catch(e){}
+  idbSave(str);
+}
+
+/* IndexedDB 보조 저장소 (세 번째 사본) */
+function idbOpen(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('hourlog-db', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('kv'); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+function idbSave(str){
+  if(typeof indexedDB === 'undefined') return;
+  idbOpen().then(db => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(str, 'state');
+  }).catch(() => {});
+}
+function idbLoad(){
+  return new Promise(res => {
+    if(typeof indexedDB === 'undefined') return res(null);
+    idbOpen().then(db => {
+      const rq = db.transaction('kv').objectStore('kv').get('state');
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => res(null);
+    }).catch(() => res(null));
+  });
+}
 function capMin(){ return Math.round(state.settings.capHours * 60); }
 
 /* ═══════════ 날짜 · 주 계산 ═══════════ */
@@ -551,6 +612,22 @@ function renderHome(){
   document.getElementById('totalActualSub').textContent = all.actual > all.counted
     ? '상한 초과 ' + fmtDur(all.actual - all.counted) + ' 제외 전 합계'
     : (state.entries.length ? '총 ' + all.days + '일 근무' : '아직 기록이 없어요');
+
+  /* 백업 알림: 기록이 있는데 백업이 없거나 30일이 지났으면 홈에 표시 */
+  const banner = document.getElementById('backupBanner');
+  let needBackup = false;
+  if(state.entries.length){
+    const lastExp = state.settings.lastExportAt;
+    if(!lastExp) needBackup = true;
+    else needBackup = ((parseDate(t) - parseDate(lastExp)) / 86400000) >= 30;
+  }
+  banner.innerHTML = needBackup
+    ? '<div class="backup-banner">기록이 폰에서 사라져도 되살릴 수 있게, 백업 파일을 내보내서 뮤즈에게 보내 두세요.<br><button id="bannerGoSettings">설정에서 백업하기</button></div>'
+    : '';
+  const bBtn = document.getElementById('bannerGoSettings');
+  if(bBtn) bBtn.addEventListener('click', () => {
+    document.querySelector('.tabbar button[data-tab="settings"]').click();
+  });
 
   const presets = [
     { name: '최근 4주', sub: '이번 주 포함', r: recentWeeksRange(4) },
@@ -698,6 +775,25 @@ function renderSettings(){
     });
   });
   document.getElementById('capInput').value = state.settings.capHours;
+  refreshPersistUI();
+}
+
+/* 영구 저장(persistent storage) 상태 표시 */
+function refreshPersistUI(){
+  const el = document.getElementById('persistDesc');
+  const btn = document.getElementById('btnPersist');
+  if(!el) return;
+  if(!('storage' in navigator) || !navigator.storage.persist || !navigator.storage.persisted){
+    el.textContent = '이 브라우저에서는 영구 저장 상태를 확인할 수 없어요. 백업 파일을 꼭 내보내 두세요.';
+    if(btn) btn.style.display = 'none';
+    return;
+  }
+  navigator.storage.persisted().then(p => {
+    el.textContent = p
+      ? '영구 저장이 켜져 있어요. 저장 공간이 부족해져도 브라우저가 이 앱의 데이터를 정리하지 않아요.'
+      : '영구 저장이 꺼져 있어요. 저장 공간이 부족해지면 브라우저가 앱 데이터를 정리할 수 있어요.';
+    if(btn) btn.style.display = p ? 'none' : '';
+  }).catch(() => {});
 }
 
 function renderAll(){ renderHome(); renderRecords(); renderStats(); renderSettings(); }
@@ -853,13 +949,23 @@ $('capInput').addEventListener('change', () => {
 
 /* 데이터 백업 · 복원 · 삭제 */
 $('btnExport').addEventListener('click', () => {
+  state.settings.lastExportAt = todayStr();
+  save();
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'hourlog-backup-' + todayStr() + '.json';
   a.click();
   URL.revokeObjectURL(a.href);
-  toast('백업 파일을 내보냈어요');
+  renderAll();
+  toast('백업 파일을 내보냈어요. 이 파일을 뮤즈 채팅에 보내 두면 안전해요');
+});
+$('btnPersist').addEventListener('click', () => {
+  if(!('storage' in navigator) || !navigator.storage.persist){ toast('이 브라우저에서는 지원하지 않아요'); return; }
+  navigator.storage.persist().then(granted => {
+    refreshPersistUI();
+    toast(granted ? '영구 저장을 켰어요' : '아직 브라우저가 허용하지 않았어요. 앱을 계속 쓰면 자동으로 허용될 수 있어요');
+  }).catch(() => toast('영구 저장 요청에 실패했어요'));
 });
 $('btnImport').addEventListener('click', () => $('importFile').click());
 $('importFile').addEventListener('change', ev => {
@@ -887,6 +993,32 @@ $('btnWipe').addEventListener('click', () => {
 });
 
 renderAll();
+
+/* 시작 시 저장 보호: 기록이 있으면 스냅샷·보조 저장소에 미러링하고,
+   주 저장소가 비었으면 보조 저장소에서 복구를 시도한다 */
+if(state.entries.length){
+  try{ localStorage.setItem(LS_BACKUP_KEY, JSON.stringify(state)); }catch(e){}
+  idbSave(JSON.stringify(state));
+} else {
+  idbLoad().then(raw => {
+    if(!raw) return;
+    try{
+      const s = JSON.parse(raw);
+      if(s && Array.isArray(s.entries) && s.entries.length && s.settings){
+        state = s;
+        save();
+        renderAll();
+        toast('보조 저장소에서 기록 ' + s.entries.length + '건을 복구했어요');
+      }
+    }catch(e){}
+  });
+}
+/* 영구 저장 자동 요청 (설치된 앱은 대개 바로 허용됨) */
+if('storage' in navigator && navigator.storage.persist && navigator.storage.persisted){
+  navigator.storage.persisted().then(p => {
+    if(!p) navigator.storage.persist().then(() => refreshPersistUI()).catch(() => {});
+  }).catch(() => {});
+}
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {

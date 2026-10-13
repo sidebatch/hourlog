@@ -1,5 +1,5 @@
 /* 아워로그 - 오프라인용 서비스 워커 (네트워크 우선) */
-const CACHE = 'hourlog-v1';
+const CACHE = 'hourlog-v2';
 const ASSETS = [
   './',
   './index.html',
