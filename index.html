@@ -204,6 +204,8 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
 .toast{position:fixed;left:50%;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 18px);transform:translate(-50%,16px);background:#171A21;color:#fff;font-size:14px;font-weight:600;padding:12px 18px;border-radius:99px;z-index:70;opacity:0;pointer-events:none;transition:all .25s;box-shadow:0 10px 28px rgba(0,0,0,.25);max-width:88vw;text-align:center}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .ver{text-align:center;color:var(--sub);font-size:12px;margin-top:18px}
+.save-error{background:#FDECEC;color:#9B1C1C;border:1.5px solid #F5B5B5;border-radius:14px;padding:13px 15px;margin-top:12px;font-size:14px;font-weight:700;line-height:1.55;display:none}
+.save-error.show{display:block}
 .backup-banner{background:#FFF7E8;border:1.5px solid #F2D492;color:#7A5200;border-radius:16px;padding:15px 16px;margin-top:14px;font-size:14px;font-weight:600;line-height:1.55}
 .backup-banner button{margin-top:10px;background:#7A5200;color:#fff;font-weight:700;font-size:13.5px;border-radius:10px;padding:9px 14px}
 </style>
@@ -221,6 +223,7 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
 </header>
 
 <main class="wrap">
+  <div class="save-error" id="saveError"></div>
 
   <!-- ═══ 홈 ═══ -->
   <section class="view active" id="view-home">
@@ -327,6 +330,12 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
     </div>
 
     <div class="card">
+      <h3>저장 상태 진단</h3>
+      <div class="desc">기록이 실제로 저장되고 있는지 여기서 확인할 수 있어요</div>
+      <div class="period-rows" id="healthRows"><div class="desc" style="padding-top:8px">확인 중...</div></div>
+    </div>
+
+    <div class="card">
       <h3>저장 보호</h3>
       <div class="desc" id="persistDesc">상태를 확인하고 있어요</div>
       <div class="set-actions">
@@ -360,7 +369,7 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
       <p class="help">브라우저 메뉴에서 <b>앱 설치</b> 또는 <b>홈 화면에 추가</b>를 누르면 앱처럼 쓸 수 있어요. 오프라인에서도 열립니다.</p>
     </div>
 
-    <div class="ver">아워로그 v1.1.0</div>
+    <div class="ver">아워로그 v1.2.0</div>
   </section>
 </main>
 
@@ -458,25 +467,61 @@ function trySnapshot(){
   }catch(e){}
   return null;
 }
+function normalizeState(s){
+  if(!s.settings) s.settings = { weekStart: 3, capHours: 30 };
+  if(!Array.isArray(s.deletedIds)) s.deletedIds = [];
+  if(!('lastSavedAt' in s)) s.lastSavedAt = null;
+  return s;
+}
 function load(){
   let s = null;
   try{
     const raw = localStorage.getItem(LS_KEY);
     if(raw) s = JSON.parse(raw);
   }catch(e){ s = null; }
-  if(s && Array.isArray(s.entries) && s.settings && s.entries.length) return s;
+  if(s && Array.isArray(s.entries) && s.settings && s.entries.length) return normalizeState(s);
   /* 주 저장소가 비었거나 깨졌으면 스냅샷으로 복구 (전체 삭제 뒤에는 스냅샷도 비어 있어 부활하지 않음) */
   const healed = trySnapshot();
-  if(healed) return healed;
-  if(s && Array.isArray(s.entries) && s.settings) return s;
-  return { entries: [], settings: { weekStart: 3, capHours: 30 } };
+  if(healed) return normalizeState(healed);
+  if(s && Array.isArray(s.entries) && s.settings) return normalizeState(s);
+  return normalizeState({ entries: [], settings: { weekStart: 3, capHours: 30 } });
+}
+
+/* 저장 직전 병합: 다른 창/화면이 먼저 저장한 기록을 내 낡은 상태로 지우지 않는다.
+   삭제는 deletedIds(삭제 표시)로 전파돼, 병합이 지운 기록을 되살리지 않는다. */
+let saveFailed = false;
+let skipMergeOnce = false;
+function mergeWithStorage(){
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    if(!raw) return;
+    const cur = JSON.parse(raw);
+    if(!cur || !Array.isArray(cur.entries)) return;
+    const tomb = new Set([...(state.deletedIds || []), ...(Array.isArray(cur.deletedIds) ? cur.deletedIds : [])]);
+    const byId = new Map();
+    for(const e of cur.entries) if(e && e.id && !tomb.has(e.id)) byId.set(e.id, e);
+    for(const e of state.entries) if(e && e.id && !tomb.has(e.id)) byId.set(e.id, e);
+    state.entries = [...byId.values()];
+    state.deletedIds = [...tomb].slice(-300);
+  }catch(e){}
 }
 function save(){
+  if(skipMergeOnce) skipMergeOnce = false;
+  else mergeWithStorage();
+  state.lastSavedAt = new Date().toISOString();
   const str = JSON.stringify(state);
+  let ok = false;
   try{
     localStorage.setItem(LS_KEY, str);
     localStorage.setItem(LS_BACKUP_KEY, str);
-  }catch(e){}
+    ok = (localStorage.getItem(LS_KEY) === str); /* 쓴 뒤 되읽어 실제 저장됐는지 검증 */
+  }catch(e){ ok = false; }
+  saveFailed = !ok;
+  const el = (typeof document !== 'undefined') ? document.getElementById('saveError') : null;
+  if(el){
+    el.classList.toggle('show', saveFailed);
+    if(saveFailed) el.textContent = '저장이 안 되고 있어요. 이 상태로 앱을 닫으면 지금 기록이 사라질 수 있어요. 설정 탭에서 백업 파일을 먼저 내보내 주세요.';
+  }
   idbSave(str);
 }
 
@@ -580,6 +625,11 @@ function fmtDur(min){ /* 8시간 30분 */
 function fmtDateKo(str, withYear){
   const d = parseDate(str);
   return (withYear ? d.getFullYear() + '년 ' : '') + (d.getMonth()+1) + '월 ' + d.getDate() + '일 (' + DAY_NAMES[d.getDay()] + ')';
+}
+function fmtDateTimeKo(iso){
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return '아직 없음';
+  return (d.getMonth()+1) + '월 ' + d.getDate() + '일 ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 function esc(s){ return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -776,6 +826,23 @@ function renderSettings(){
   });
   document.getElementById('capInput').value = state.settings.capHours;
   refreshPersistUI();
+  renderHealth();
+}
+
+/* 저장 상태 진단: 기록 수 · 마지막 저장 시각 · 이 주소 전체 앱의 저장 사용량 */
+function renderHealth(){
+  const el = document.getElementById('healthRows');
+  if(!el) return;
+  let html = '<div class="period-row"><div class="p-name" style="font-size:14px">저장된 기록</div><div class="p-vals num"><b style="font-size:14px">' + state.entries.length + '건</b></div></div>' +
+    '<div class="period-row"><div class="p-name" style="font-size:14px">마지막 저장</div><div class="p-vals num"><b style="font-size:14px">' + (state.lastSavedAt ? fmtDateTimeKo(state.lastSavedAt) : '아직 없음') + '</b></div></div>' +
+    '<div class="period-row"><div class="p-name" style="font-size:14px">저장 검증</div><div class="p-vals num"><b style="font-size:14px">' + (saveFailed ? '실패하고 있어요' : '정상') + '</b></div></div>';
+  el.innerHTML = html;
+  if(navigator.storage && navigator.storage.estimate){
+    navigator.storage.estimate().then(est => {
+      const mb = b => ((b || 0) / 1048576).toFixed(1);
+      el.innerHTML = html + '<div class="period-row"><div class="p-name" style="font-size:14px">이 주소 전체 앱 저장 사용량</div><div class="p-vals num"><b style="font-size:14px">' + mb(est.usage) + 'MB</b><br><span class="a">최대 ' + mb(est.quota) + 'MB</span></div></div>';
+    }).catch(() => {});
+  }
 }
 
 /* 영구 저장(persistent storage) 상태 표시 */
@@ -926,6 +993,7 @@ $('btnCancel').addEventListener('click', closeSheet);
 $('btnSave').addEventListener('click', saveEntry);
 $('btnDelete').addEventListener('click', () => {
   askConfirm('이 기록을 삭제할까요?', '삭제하면 누적 시간에서도 빠집니다.', '삭제', () => {
+    state.deletedIds = [...(state.deletedIds || []), editingId].slice(-300);
     state.entries = state.entries.filter(x => x.id !== editingId);
     save(); closeSheet(); renderAll();
     toast('기록을 삭제했어요');
@@ -976,7 +1044,8 @@ $('importFile').addEventListener('change', ev => {
     try{
       const s = JSON.parse(r.result);
       if(!s || !Array.isArray(s.entries) || !s.settings) throw new Error('bad');
-      state = s;
+      state = normalizeState(s);
+      skipMergeOnce = true; /* 불러오기는 교체가 원칙이라 병합하지 않음 */
       save(); renderAll();
       toast('백업을 불러왔어요 · 기록 ' + s.entries.length + '건');
     }catch(e){ toast('읽을 수 없는 백업 파일이에요'); }
@@ -986,6 +1055,7 @@ $('importFile').addEventListener('change', ev => {
 });
 $('btnWipe').addEventListener('click', () => {
   askConfirm('모든 기록을 삭제할까요?', '기록 ' + state.entries.length + '건이 전부 지워지고 되돌릴 수 없어요. 백업을 먼저 내보내는 걸 권해요.', '전부 삭제', () => {
+    state.deletedIds = [...(state.deletedIds || []), ...state.entries.map(e => e.id)].slice(-300);
     state.entries = [];
     save(); renderAll();
     toast('모든 기록을 삭제했어요');
@@ -994,11 +1064,10 @@ $('btnWipe').addEventListener('click', () => {
 
 renderAll();
 
-/* 시작 시 저장 보호: 기록이 있으면 스냅샷·보조 저장소에 미러링하고,
+/* 시작 시 저장 보호: 기록이 있으면 병합·검증하며 다시 저장하고,
    주 저장소가 비었으면 보조 저장소에서 복구를 시도한다 */
 if(state.entries.length){
-  try{ localStorage.setItem(LS_BACKUP_KEY, JSON.stringify(state)); }catch(e){}
-  idbSave(JSON.stringify(state));
+  save();
 } else {
   idbLoad().then(raw => {
     if(!raw) return;
@@ -1019,6 +1088,20 @@ if('storage' in navigator && navigator.storage.persist && navigator.storage.pers
     if(!p) navigator.storage.persist().then(() => refreshPersistUI()).catch(() => {});
   }).catch(() => {});
 }
+
+/* 게임처럼: 앱을 떠날 때 현재 상태를 한 번 더 저장하고,
+   돌아왔을 때는 다른 화면이 쓴 기록까지 병합해 되살린다 */
+window.addEventListener('pagehide', () => { try{ save(); }catch(e){} });
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'hidden'){
+    try{ save(); }catch(e){}
+  } else {
+    const before = state.entries.map(e => e.id).join(',');
+    save();
+    const after = state.entries.map(e => e.id).join(',');
+    if(before !== after && !$('sheet').classList.contains('show')) renderAll();
+  }
+});
 
 if('serviceWorker' in navigator){
   window.addEventListener('load', () => {
