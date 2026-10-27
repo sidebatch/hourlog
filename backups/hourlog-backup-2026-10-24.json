@@ -1,0 +1,141 @@
+{
+  "entries": [
+    {
+      "date": "2026-10-07",
+      "mode": "range",
+      "start": "15:00",
+      "end": "20:15",
+      "breakMin": 0,
+      "minutes": 315,
+      "note": "",
+      "id": "mv67nuoqn6g9s"
+    },
+    {
+      "date": "2026-10-09",
+      "mode": "range",
+      "start": "15:00",
+      "end": "22:15",
+      "breakMin": 0,
+      "minutes": 435,
+      "note": "",
+      "id": "mv67opr5ygpvn"
+    },
+    {
+      "date": "2026-10-10",
+      "mode": "range",
+      "start": "15:00",
+      "end": "22:00",
+      "breakMin": 0,
+      "minutes": 420,
+      "note": "",
+      "id": "mv67p8p81t935"
+    },
+    {
+      "date": "2026-10-11",
+      "mode": "range",
+      "start": "09:00",
+      "end": "13:00",
+      "breakMin": 0,
+      "minutes": 240,
+      "note": "",
+      "id": "mv67pngxbk41b"
+    },
+    {
+      "date": "2026-10-11",
+      "mode": "range",
+      "start": "14:00",
+      "end": "21:30",
+      "breakMin": 0,
+      "minutes": 450,
+      "note": "",
+      "id": "mv67q5906s103"
+    },
+    {
+      "date": "2026-10-13",
+      "mode": "range",
+      "start": "16:00",
+      "end": "22:00",
+      "breakMin": 0,
+      "minutes": 360,
+      "note": "",
+      "id": "mv7q89axunopy"
+    },
+    {
+      "date": "2026-10-14",
+      "mode": "direct",
+      "start": "",
+      "end": "",
+      "breakMin": 0,
+      "minutes": 435,
+      "note": "",
+      "id": "mvla3eyyqwx22"
+    },
+    {
+      "date": "2026-10-16",
+      "mode": "direct",
+      "start": "",
+      "end": "",
+      "breakMin": 0,
+      "minutes": 465,
+      "note": "",
+      "id": "mvla3tbkdvzut"
+    },
+    {
+      "date": "2026-10-17",
+      "mode": "direct",
+      "start": "",
+      "end": "",
+      "breakMin": 0,
+      "minutes": 480,
+      "note": "",
+      "id": "mvla432cypdef"
+    },
+    {
+      "date": "2026-10-18",
+      "mode": "direct",
+      "start": "",
+      "end": "",
+      "breakMin": 0,
+      "minutes": 420,
+      "note": "",
+      "id": "mvla4bseou6m3"
+    },
+    {
+      "date": "2026-10-20",
+      "mode": "direct",
+      "start": "",
+      "end": "",
+      "breakMin": 0,
+      "minutes": 510,
+      "note": "",
+      "id": "mvla51arq9vzl"
+    },
+    {
+      "date": "2026-10-21",
+      "mode": "range",
+      "start": "15:00",
+      "end": "21:30",
+      "breakMin": 0,
+      "minutes": 390,
+      "note": "",
+      "id": "mvla7zo8itfol"
+    },
+    {
+      "date": "2026-10-23",
+      "mode": "range",
+      "start": "15:00",
+      "end": "23:45",
+      "breakMin": 0,
+      "minutes": 525,
+      "note": "",
+      "id": "mvlvtz5iwkhqz"
+    }
+  ],
+  "settings": {
+    "weekStart": 3,
+    "capHours": 30,
+    "lastExportAt": "2026-10-24"
+  },
+  "deletedIds": [],
+  "lastSavedAt": "2026-10-24T04:13:05.865Z"
+}

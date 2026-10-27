@@ -313,6 +313,17 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
   <!-- ═══ 설정 ═══ -->
   <section class="view" id="view-settings">
     <div class="card">
+      <h3>계정 · 서버 저장</h3>
+      <div class="desc" id="acctDesc">로그인하면 기록이 서버에 저장돼서, 폰을 바꾸거나 브라우저가 비워져도 로그인만으로 전부 돌아와요. 로그인 전에도 이 기기에는 계속 저장됩니다.</div>
+      <div class="set-actions">
+        <button class="btn-ghost" id="btnLogin">Google로 로그인</button>
+        <button class="btn-ghost" id="btnSyncNow" style="display:none">지금 동기화</button>
+        <button class="btn-ghost" id="btnLogout" style="display:none">로그아웃</button>
+      </div>
+      <div class="desc" id="syncDesc" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
       <h3>주 단위 설정</h3>
       <div class="set-row" style="border-bottom:1px solid var(--line)">
         <div class="s-t">주 시작 요일</div>
@@ -346,7 +357,7 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
 
     <div class="card">
       <h3>데이터</h3>
-      <div class="desc">기록은 이 기기에만 저장돼요. 기기를 바꾸기 전에 백업해 두세요.</div>
+      <div class="desc">백업 파일은 어떤 상황에서도 되살릴 수 있는 최종 사본이에요. 기기를 바꾸기 전에 하나 내보내 두세요.</div>
       <div class="set-actions">
         <button class="btn-ghost" id="btnExport">백업 파일 내보내기</button>
         <button class="btn-ghost" id="btnImport">백업 파일 불러오기</button>
@@ -369,7 +380,7 @@ input[type="date"],input[type="time"],input[type="text"]{width:100%;padding:13px
       <p class="help">브라우저 메뉴에서 <b>앱 설치</b> 또는 <b>홈 화면에 추가</b>를 누르면 앱처럼 쓸 수 있어요. 오프라인에서도 열립니다.</p>
     </div>
 
-    <div class="ver">아워로그 v1.2.0</div>
+    <div class="ver">아워로그 v1.3.0</div>
   </section>
 </main>
 
@@ -523,6 +534,7 @@ function save(){
     if(saveFailed) el.textContent = '저장이 안 되고 있어요. 이 상태로 앱을 닫으면 지금 기록이 사라질 수 있어요. 설정 탭에서 백업 파일을 먼저 내보내 주세요.';
   }
   idbSave(str);
+  schedulePush();
 }
 
 /* IndexedDB 보조 저장소 (세 번째 사본) */
@@ -827,6 +839,7 @@ function renderSettings(){
   document.getElementById('capInput').value = state.settings.capHours;
   refreshPersistUI();
   renderHealth();
+  renderAccount();
 }
 
 /* 저장 상태 진단: 기록 수 · 마지막 저장 시각 · 이 주소 전체 앱의 저장 사용량 */
@@ -1062,6 +1075,164 @@ $('btnWipe').addEventListener('click', () => {
   });
 });
 
+/* ═══════════ 서버 동기화 (Supabase — One Phrase와 같은 프로젝트) ═══════════
+   로컬이 우선이고, 로그인하면 서버와 병합해 거울처럼 맞춘다.
+   삭제는 deletedIds로 서버에도 전파돼, 다른 기기에서 되살아나지 않는다. */
+const SB_URL = 'https://cmhitsgoicxvmlwtrdrb.supabase.co';
+const SB_KEY = 'sb_publishable_iZugJ1l1p3DSk_BB2Y3N3Q_qZwSo637';
+const SB_JS_URL = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+let sb = null, sbUser = null, syncBusy = false, syncFailed = false, lastSyncAt = null, pushTimer = null;
+
+function sbLoad(){
+  return new Promise((resolve, reject) => {
+    if(window.supabase && window.supabase.createClient){
+      try{ resolve(window.supabase.createClient(SB_URL, SB_KEY)); }catch(e){ reject(e); }
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = SB_JS_URL; s.async = true;
+    s.onload = () => { try{ resolve(window.supabase.createClient(SB_URL, SB_KEY)); }catch(e){ reject(e); } };
+    s.onerror = () => reject(new Error('supabase-js load failed'));
+    document.head.appendChild(s);
+  });
+}
+function entryToRow(e){
+  return { user_id: sbUser.id, id: e.id, date: e.date, mode: e.mode, start_time: e.start || '', end_time: e.end || '', break_min: e.breakMin || 0, minutes: e.minutes, note: e.note || '', updated_at: new Date().toISOString() };
+}
+function rowToEntry(r){
+  return { id: r.id, date: r.date, mode: r.mode, start: r.start_time || '', end: r.end_time || '', breakMin: r.break_min || 0, minutes: r.minutes, note: r.note || '' };
+}
+/* 두 기록 집합의 합집합에서 삭제 표시를 제외 (뒤쪽 집합이 같은 id에서 우선) */
+function mergeEntrySets(a, b, tombstones){
+  const tomb = new Set(tombstones || []);
+  const byId = new Map();
+  for(const e of (a || [])) if(e && e.id && !tomb.has(e.id)) byId.set(e.id, e);
+  for(const e of (b || [])) if(e && e.id && !tomb.has(e.id)) byId.set(e.id, e);
+  return [...byId.values()];
+}
+/* 동기화 병합의 순수 계산 부분 (테스트 대상) */
+function computeSyncMerge(localState, serverEntries, serverSettingsRow){
+  const serverTomb = (serverSettingsRow && Array.isArray(serverSettingsRow.deleted_ids)) ? serverSettingsRow.deleted_ids : [];
+  const tombAll = [...new Set([...(localState.deletedIds || []), ...serverTomb])].slice(-300);
+  const entries = mergeEntrySets(serverEntries, localState.entries, tombAll);
+  const settings = { ...(localState.settings || {}) };
+  const localFresh = (!localState.entries || localState.entries.length === 0) && !(localState.settings && localState.settings.lastExportAt);
+  if(localFresh && serverSettingsRow){
+    settings.weekStart = serverSettingsRow.week_start;
+    settings.capHours = Number(serverSettingsRow.cap_hours);
+  }
+  return { entries, deletedIds: tombAll, settings, localFresh };
+}
+
+async function pushMirrorWith(prevServerIds){
+  const rows = state.entries.map(entryToRow);
+  if(rows.length){
+    const { error } = await sb.from('hourlog_entries').upsert(rows, { onConflict: 'user_id,id' });
+    if(error) throw error;
+  }
+  const keep = new Set(state.entries.map(e => e.id));
+  const toDelete = (prevServerIds || []).filter(id => !keep.has(id));
+  if(toDelete.length){
+    const { error } = await sb.from('hourlog_entries').delete().eq('user_id', sbUser.id).in('id', toDelete);
+    if(error) throw error;
+  }
+  const { error } = await sb.from('hourlog_settings').upsert(
+    { user_id: sbUser.id, week_start: state.settings.weekStart, cap_hours: state.settings.capHours, deleted_ids: state.deletedIds || [], updated_at: new Date().toISOString() },
+    { onConflict: 'user_id' });
+  if(error) throw error;
+}
+async function pushMirror(){
+  if(!sb || !sbUser || syncBusy) return;
+  syncBusy = true;
+  try{
+    const { data: rows, error } = await sb.from('hourlog_entries').select('id').eq('user_id', sbUser.id);
+    if(error) throw error;
+    await pushMirrorWith((rows || []).map(r => r.id));
+    lastSyncAt = new Date(); syncFailed = false;
+  }catch(e){ syncFailed = true; }
+  syncBusy = false;
+  renderAccount();
+}
+function schedulePush(){
+  if(!sbUser) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => { pushMirror().catch(() => {}); }, 1200);
+}
+async function syncNow(manual){
+  if(!sb || !sbUser || syncBusy) return;
+  syncBusy = true; renderAccount();
+  try{
+    const [eRes, sRes] = await Promise.all([
+      sb.from('hourlog_entries').select('*').eq('user_id', sbUser.id),
+      sb.from('hourlog_settings').select('*').eq('user_id', sbUser.id).maybeSingle()
+    ]);
+    if(eRes.error) throw eRes.error;
+    if(sRes.error) throw sRes.error;
+    const serverEntries = (eRes.data || []).map(rowToEntry);
+    mergeWithStorage();
+    const merged = computeSyncMerge(state, serverEntries, sRes.data || null);
+    state.entries = merged.entries;
+    state.deletedIds = merged.deletedIds;
+    state.settings = { ...state.settings, weekStart: merged.settings.weekStart, capHours: merged.settings.capHours };
+    skipMergeOnce = true; save();
+    await pushMirrorWith(serverEntries.map(e => e.id));
+    lastSyncAt = new Date(); syncFailed = false;
+    if(manual) toast('동기화했어요 · 기록 ' + state.entries.length + '건');
+  }catch(err){
+    syncFailed = true;
+    if(manual) toast('동기화에 실패했어요. 네트워크 상태를 확인해 주세요');
+  }
+  syncBusy = false;
+  renderAll();
+}
+function renderAccount(){
+  const desc = document.getElementById('acctDesc');
+  const login = document.getElementById('btnLogin');
+  const syncB = document.getElementById('btnSyncNow');
+  const out = document.getElementById('btnLogout');
+  const sd = document.getElementById('syncDesc');
+  if(!desc || !login) return;
+  if(sbUser){
+    desc.innerHTML = '<b>' + esc(sbUser.email || '로그인됨') + '</b> 으로 로그인했어요. 기록은 서버와 이 기기에 함께 저장됩니다.';
+    login.style.display = 'none'; syncB.style.display = ''; out.style.display = '';
+  } else {
+    desc.textContent = '로그인하면 기록이 서버에 저장돼서, 폰을 바꾸거나 브라우저가 비워져도 로그인만으로 전부 돌아와요. 로그인 전에도 이 기기에는 계속 저장됩니다.';
+    login.style.display = ''; syncB.style.display = 'none'; out.style.display = 'none';
+  }
+  if(sd){
+    if(!sbUser) sd.textContent = '';
+    else if(syncBusy) sd.textContent = '동기화 중...';
+    else if(syncFailed) sd.textContent = '마지막 동기화가 실패했어요. 기록은 이 기기에 안전하게 있고, 연결되면 다시 시도합니다.';
+    else if(lastSyncAt) sd.textContent = '마지막 동기화: ' + fmtDateTimeKo(lastSyncAt.toISOString());
+    else sd.textContent = '';
+  }
+}
+$('btnLogin').addEventListener('click', async () => {
+  if(!sb){ try{ sb = await sbLoad(); }catch(e){ toast('네트워크 연결이 필요해요'); return; } }
+  sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } });
+});
+$('btnLogout').addEventListener('click', async () => {
+  if(sb) await sb.auth.signOut();
+  sbUser = null; lastSyncAt = null; syncFailed = false;
+  renderAccount();
+  toast('로그아웃했어요. 기록은 이 기기에 남아 있어요');
+});
+$('btnSyncNow').addEventListener('click', () => syncNow(true));
+sbLoad().then(client => {
+  sb = client;
+  sb.auth.getSession().then(({ data }) => {
+    sbUser = (data && data.session) ? data.session.user : null;
+    renderAccount();
+    if(sbUser) syncNow(false);
+  }).catch(() => {});
+  sb.auth.onAuthStateChange((_ev, session) => {
+    const prevId = sbUser && sbUser.id;
+    sbUser = session ? session.user : null;
+    renderAccount();
+    if(sbUser && prevId !== sbUser.id) syncNow(false);
+  });
+}).catch(() => { /* 오프라인이면 로컬 전용으로 계속 동작 */ });
+
 renderAll();
 
 /* 시작 시 저장 보호: 기록이 있으면 병합·검증하며 다시 저장하고,
@@ -1100,6 +1271,7 @@ document.addEventListener('visibilitychange', () => {
     save();
     const after = state.entries.map(e => e.id).join(',');
     if(before !== after && !$('sheet').classList.contains('show')) renderAll();
+    if(sbUser && (!lastSyncAt || (Date.now() - lastSyncAt.getTime()) > 60000)) syncNow(false);
   }
 });
 
